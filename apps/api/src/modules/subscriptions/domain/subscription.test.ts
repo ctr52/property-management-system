@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  activate,
   attachPaymentMethod,
   beginTrial,
   cancel,
@@ -9,6 +8,7 @@ import {
   isTrialUnpaid,
   lapseTrial,
   MAX_TRIAL_DAYS,
+  renew,
   type Subscription,
 } from './subscription';
 
@@ -76,33 +76,38 @@ describe('lapseTrial', () => {
   });
 });
 
-describe('activate', () => {
-  it('из trialing → active, everPaid, currentPeriodEnd = now + period', () => {
-    const sub = activate(trial(), { now: NOW, periodDays: 30 })._unsafeUnwrap();
+describe('renew', () => {
+  it('оплата в триале → active; период клеится к КОНЦУ триала (остаток не сгорает)', () => {
+    // trial(): now=2026-06-29, trialEndsAt=2026-07-13. Оплата в середине триала.
+    const sub = renew(trial(), { now: NOW, periodDays: 30 })._unsafeUnwrap();
     expect(sub.status).toBe('active');
     expect(sub.everPaid).toBe(true);
     expect(sub.trialEndsAt).toBeNull();
-    expect(sub.currentPeriodEnd).toBe('2026-07-29T00:00:00.000Z');
+    // 2026-07-13 (конец триала) + 30 дней, а НЕ now + 30.
+    expect(sub.currentPeriodEnd).toBe('2026-08-12T00:00:00.000Z');
     expect(isReadOnly(sub)).toBe(false);
     expect(isTrialUnpaid(sub)).toBe(false);
   });
 
-  it('из expired (оплата после лапса) снимает read-only и замок отвязки', () => {
-    const expired = lapseTrial(trial())._unsafeUnwrap();
-    const sub = activate(expired, { now: NOW, periodDays: 30 })._unsafeUnwrap();
+  it('из expired (конец триала/периода в прошлом) → период считается от now', () => {
+    const expired = lapseTrial(trial())._unsafeUnwrap(); // trialEndsAt=null, currentPeriodEnd=null
+    const sub = renew(expired, { now: NOW, periodDays: 30 })._unsafeUnwrap();
     expect(sub.status).toBe('active');
+    expect(sub.currentPeriodEnd).toBe('2026-07-29T00:00:00.000Z'); // now + 30
     expect(isTrialUnpaid(sub)).toBe(false);
   });
 
-  it('повторно из active → invalid_transition', () => {
-    const active = activate(trial(), { now: NOW, periodDays: 30 })._unsafeUnwrap();
-    expect(activate(active, { now: NOW, periodDays: 30 })._unsafeUnwrapErr().code).toBe('invalid_transition');
+  it('повторно из active → ПРОДЛЕВАЕТ currentPeriodEnd (не сбрасывает от now)', () => {
+    const active = renew(trial(), { now: NOW, periodDays: 30 })._unsafeUnwrap(); // конец 2026-08-12
+    const extended = renew(active, { now: NOW, periodDays: 30 })._unsafeUnwrap();
+    expect(extended.status).toBe('active');
+    expect(extended.currentPeriodEnd).toBe('2026-09-11T00:00:00.000Z'); // 2026-08-12 + 30
   });
 });
 
 describe('cancel', () => {
   it('active → canceled (read-only, но платил → отвязка аккаунтов разрешена)', () => {
-    const active = activate(trial(), { now: NOW, periodDays: 30 })._unsafeUnwrap();
+    const active = renew(trial(), { now: NOW, periodDays: 30 })._unsafeUnwrap();
     const sub = cancel(active)._unsafeUnwrap();
     expect(sub.status).toBe('canceled');
     expect(isReadOnly(sub)).toBe(true);

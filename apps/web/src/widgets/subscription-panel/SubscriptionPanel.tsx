@@ -3,7 +3,7 @@ import type { SubscriptionStatus, SubscriptionView } from '../../entities/subscr
 import { useCan } from '../../entities/auth';
 import { usePlans, useSubscription } from '../../entities/subscription';
 import { useSubscribe } from '../../features/manage-subscription/useSubscribe';
-import { useReactivate } from '../../features/manage-subscription/useReactivate';
+import { usePay } from '../../features/manage-subscription/usePay';
 import { Button, Card, Input, Select, Stack, Text } from '../../shared/ui';
 
 const STATUS_LABEL: Record<SubscriptionStatus, string> = {
@@ -123,31 +123,60 @@ const SubscribeForm = () => {
   );
 };
 
-/** CTA оплаты из read-only: одна кнопка, путь (списание/привязка карты) выбирает сервер. */
-const ReactivatePanel = () => {
-  const reactivate = useReactivate();
+/** Текст CTA оплаты под статус: продление триала/active или реактивация из read-only. */
+const PAY_COPY: Record<SubscriptionStatus, { title: string; hint: string; cta: string }> = {
+  trialing: {
+    title: 'Оплатить подписку',
+    hint: 'Оплатите период сейчас — он добавится к дате окончания триала, остаток пробных дней не сгорит.',
+    cta: 'Оплатить',
+  },
+  active: {
+    title: 'Продлить подписку',
+    hint: 'Оплатите ещё период — он добавится к текущей дате «оплачено до».',
+    cta: 'Продлить',
+  },
+  expired: {
+    title: 'Возобновить подписку',
+    hint: 'Оплатите, чтобы снять режим только для чтения. Карта на файле — спишем сразу, иначе откроется привязка карты.',
+    cta: 'Оплатить',
+  },
+  canceled: {
+    title: 'Возобновить подписку',
+    hint: 'Оплатите, чтобы снова активировать подписку. Карта на файле — спишем сразу, иначе откроется привязка карты.',
+    cta: 'Оплатить',
+  },
+};
+
+/** CTA оплаты периода: одна кнопка, путь (списание/привязка карты) и семантику выбирает сервер. */
+const PayPanel = ({ sub }: { sub: SubscriptionView }) => {
+  const pay = usePay();
+  const copy = PAY_COPY[sub.status];
   return (
     <Card>
       <Stack gap={2}>
-        <Text weight={600}>Возобновить подписку</Text>
+        <Text weight={600}>{copy.title}</Text>
         <Text size="sm" muted>
-          Оплатите, чтобы снять режим только для чтения. Если карта уже привязана — спишем сразу,
-          иначе откроется страница привязки карты.
+          {copy.hint}
         </Text>
         <Stack direction="row" gap={2} align="center">
-          <Button disabled={reactivate.isPending} onClick={() => reactivate.mutate()}>
-            Оплатить
+          <Button disabled={pay.isPending} onClick={() => pay.mutate()}>
+            {copy.cta}
           </Button>
-          {reactivate.isPending && <Text muted size="sm">Переходим к оплате…</Text>}
+          {pay.isPending && <Text muted size="sm">Переходим к оплате…</Text>}
         </Stack>
-        {reactivate.isError && (
+        {pay.isError && (
           <Text size="sm" css={(t) => ({ color: t.colors.danger })}>
-            Не удалось возобновить. Попробуйте ещё раз.
+            Не удалось оплатить. Попробуйте ещё раз.
           </Text>
         )}
-        {reactivate.data?.kind === 'declined' && (
+        {pay.data?.kind === 'declined' && (
           <Text size="sm" css={(t) => ({ color: t.colors.danger })}>
             Карта отклонена. Привяжите другую карту и попробуйте снова.
+          </Text>
+        )}
+        {pay.data?.kind === 'paid' && (
+          <Text size="sm" css={(t) => ({ color: t.colors.link })}>
+            Оплата прошла. Дата окончания продлена.
           </Text>
         )}
       </Stack>
@@ -158,7 +187,7 @@ const ReactivatePanel = () => {
 /**
  * Панель подписки (SaaS-биллинг тенанта): статус + действие. Самодостаточна — сама читает
  * подписку и тарифы. Действия видны только org:manage; статус — всем. Нет подписки → форма триала;
- * read-only → оплата (реактивация).
+ * есть подписка → оплата периода (продление триала/active или реактивация из read-only).
  */
 export const SubscriptionPanel = () => {
   const canManage = useCan()('org:manage');
@@ -176,7 +205,7 @@ export const SubscriptionPanel = () => {
       )}
 
       {canManage && !sub.data && <SubscribeForm />}
-      {canManage && sub.data?.readOnly && <ReactivatePanel />}
+      {canManage && sub.data && <PayPanel sub={sub.data} />}
     </Stack>
   );
 };

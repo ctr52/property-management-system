@@ -114,4 +114,7 @@ export const createDrizzleCardSetupIntentRepo = (db: Db): CardSetupIntentRepo =>
     const row = rows[0];
     return row ? toIntent(row) : null;
   },
+  consume: async (paymentId) => {
+    await db.delete(cardSetupIntents).where(eq(cardSetupIntents.paymentId, paymentId));
+  },
 });

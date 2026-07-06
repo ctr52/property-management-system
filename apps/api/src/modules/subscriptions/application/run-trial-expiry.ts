@@ -1,5 +1,5 @@
 import type { Clock } from '../../../shared/ports';
-import { activate, decideTrialExpiry, lapseTrial, type Subscription } from '../domain/subscription';
+import { decideTrialExpiry, lapseTrial, renew, type Subscription } from '../domain/subscription';
 import type { BillingGateway } from '../ports/gateway';
 import type { PlanRepo, SubscriptionRepo } from '../ports/repos';
 
@@ -21,7 +21,7 @@ export type TrialExpirySummary = {
 
 /**
  * Фоновый прогон истечения триалов (идемпотентный, безопасен к повторам):
- *  - carded + списание прошло → activate (платный период);
+ *  - carded + списание прошло → renew (платный период);
  *  - carded + карта отклонена → lapseTrial (read-only);
  *  - cardless → lapseTrial (read-only);
  *  - временный сбой шлюза → skip (повтор в следующий тик, тот же idempotencyKey → без двойного списания).
@@ -78,7 +78,7 @@ export const runTrialExpiry =
       }
 
       if (charge.value.status === 'succeeded') {
-        const r = activate(sub, { now, periodDays: plan.periodDays });
+        const r = renew(sub, { now, periodDays: plan.periodDays });
         if (r.isOk()) {
           await deps.subscriptions.save(r.value);
           activated += 1;

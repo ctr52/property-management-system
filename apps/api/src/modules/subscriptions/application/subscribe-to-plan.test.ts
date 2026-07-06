@@ -60,6 +60,7 @@ const makeDeps = (over: {
     cardSetupIntents: {
       save: async (i) => void intents.push({ paymentId: i.paymentId, orgId: i.orgId }),
       getByPaymentId: async () => null,
+      consume: async () => {},
     },
     phoneVerification: { isVerified: async () => over.phoneVerified ?? true },
     clock: { now: () => NOW },

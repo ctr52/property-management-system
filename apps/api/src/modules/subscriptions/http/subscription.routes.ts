@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import {
-  ReactivateInputSchema,
+  PayInputSchema,
   SubscribeInputSchema,
+  type PayResult,
   type PlanView,
-  type ReactivateResult,
   type SubscribeResult,
   type SubscriptionView,
 } from '@pms/shared';
@@ -14,7 +14,7 @@ import { type AppError, httpStatusForError } from '../../../shared/errors';
 import type { AppEnv } from '../../../app-env';
 import { requirePermission } from '../../../guards';
 import type { SubscribeOutcome, SubscribeToPlanInput } from '../application/subscribe-to-plan';
-import type { ReactivateInput, ReactivateOutcome } from '../application/reactivate-subscription';
+import type { PayForPeriodInput, PayForPeriodOutcome } from '../application/pay-for-period';
 import { toSubscriptionView } from '../domain/view';
 
 export type SubscriptionRouteDeps = {
@@ -22,9 +22,9 @@ export type SubscriptionRouteDeps = {
   readonly getSubscription: (orgId: string) => Promise<SubscriptionView | null>;
   /** Витрина доступных тарифов (для формы подписки). */
   readonly getPlans: () => Promise<readonly PlanView[]>;
-  /** Оплата из read-only (expired/canceled) → active либо редирект на привязку карты. */
-  readonly reactivate: (orgId: string, input: ReactivateInput) => Promise<Result<ReactivateOutcome, AppError>>;
-  /** Подтверждение auth-hold по вебхуку шлюза → старт carded-триала. paymentId из тела уведомления. */
+  /** Оплата периода (продление триала/active ИЛИ реактивация из read-only) → active либо редирект на карту. */
+  readonly pay: (orgId: string, input: PayForPeriodInput) => Promise<Result<PayForPeriodOutcome, AppError>>;
+  /** Подтверждение auth-hold по вебхуку шлюза → старт carded-триала / оплата периода. paymentId из тела. */
   readonly confirmCardSetup: (paymentId: string) => Promise<unknown>;
 };
 
@@ -52,11 +52,11 @@ const toResult = (o: SubscribeOutcome): SubscribeResult => {
   }
 };
 
-/** Доменный outcome реактивации → shared-контракт. */
-const toReactivateResult = (o: ReactivateOutcome): ReactivateResult => {
+/** Доменный outcome оплаты периода → shared-контракт. */
+const toPayResult = (o: PayForPeriodOutcome): PayResult => {
   switch (o.kind) {
-    case 'activated':
-      return { kind: 'activated', subscription: toSubscriptionView(o.subscription) };
+    case 'paid':
+      return { kind: 'paid', subscription: toSubscriptionView(o.subscription) };
     case 'declined':
       return { kind: 'declined' };
     case 'card_required':
@@ -93,8 +93,8 @@ export const createSubscriptionRoutes = (deps: SubscriptionRouteDeps, requireAut
       if (result.isErr()) return c.json({ error: result.error }, httpStatusForError(result.error));
       return c.json(toResult(result.value));
     })
-    .post('/reactivate', requirePermission('org:manage'), zValidator('json', ReactivateInputSchema), async (c) => {
-      const result = await deps.reactivate(c.get('auth').orgId, { returnUrl: c.req.valid('json').returnUrl });
+    .post('/pay', requirePermission('org:manage'), zValidator('json', PayInputSchema), async (c) => {
+      const result = await deps.pay(c.get('auth').orgId, { returnUrl: c.req.valid('json').returnUrl });
       if (result.isErr()) return c.json({ error: result.error }, httpStatusForError(result.error));
-      return c.json(toReactivateResult(result.value));
+      return c.json(toPayResult(result.value));
     });

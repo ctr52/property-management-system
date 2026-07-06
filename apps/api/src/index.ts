@@ -108,7 +108,7 @@ import {
 } from './modules/subscriptions/adapters/drizzle/subscription-repos.drizzle';
 import { subscribeToPlan } from './modules/subscriptions/application/subscribe-to-plan';
 import { confirmCardSetup } from './modules/subscriptions/application/confirm-card-setup';
-import { reactivateSubscription } from './modules/subscriptions/application/reactivate-subscription';
+import { payForPeriod } from './modules/subscriptions/application/pay-for-period';
 import { runTrialExpiry } from './modules/subscriptions/application/run-trial-expiry';
 import { toSubscriptionView } from './modules/subscriptions/domain/view';
 import { DEFAULT_TRIAL_DAYS } from './modules/subscriptions/domain/subscription';
@@ -662,7 +662,7 @@ const main = async () => {
     clock,
     idGen: () => randomUUID(),
   });
-  const reactivateFn = reactivateSubscription({
+  const payFn = payForPeriod({
     subscriptions: subscriptionRepo,
     plans: planRepo,
     gateway: billingGateway,
@@ -915,7 +915,7 @@ const main = async () => {
         return sub ? toSubscriptionView(sub) : null;
       },
       getPlans: () => planRepo.list(),
-      reactivate: reactivateFn,
+      pay: payFn,
       confirmCardSetup: confirmCardSetupFn,
     },
   });

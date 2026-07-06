@@ -44,6 +44,11 @@ export type CardSetupIntent = {
 export type CardSetupIntentRepo = {
   readonly save: (intent: CardSetupIntent) => Promise<void>;
   readonly getByPaymentId: (paymentId: string) => Promise<CardSetupIntent | null>;
+  /**
+   * Пометить intent обработанным (удалить). Делает подтверждение холда идемпотентным:
+   * повторный вебхук того же платежа уже не находит intent и не двоит списание/активацию.
+   */
+  readonly consume: (paymentId: string) => Promise<void>;
 };
 
 /**

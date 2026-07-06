@@ -42,7 +42,7 @@ describe('runTrialExpiry', () => {
     expect(saved[0]!.status).toBe('expired');
   });
 
-  it('carded + списание прошло → activate (платный период)', async () => {
+  it('carded + списание прошло → renew (платный период)', async () => {
     const { deps, saved, gateway } = makeDeps([
       trial({ orgId: 'org2', paymentMethodAttached: true, billingMethodRef: 'pm_1' }),
     ]);

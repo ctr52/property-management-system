@@ -54,6 +54,7 @@ export const createInMemoryCardSetupIntentRepo = (): CardSetupIntentRepo => {
   return {
     save: async (intent) => void byPaymentId.set(intent.paymentId, intent),
     getByPaymentId: async (paymentId) => byPaymentId.get(paymentId) ?? null,
+    consume: async (paymentId) => void byPaymentId.delete(paymentId),
   };
 };
 

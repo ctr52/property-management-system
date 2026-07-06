@@ -1,7 +1,7 @@
 import { err, ok, type Result } from 'neverthrow';
 import { type AppError, notFoundError, validationError } from '../../../shared/errors';
 import type { Clock, IdGen } from '../../../shared/ports';
-import { activate, attachPaymentMethod, beginTrial, isReadOnly } from '../domain/subscription';
+import { attachPaymentMethod, beginTrial, renew } from '../domain/subscription';
 import type { BillingGateway } from '../ports/gateway';
 import type { CardLedger, CardSetupIntentRepo, PlanRepo, SubscriptionRepo } from '../ports/repos';
 
@@ -17,33 +17,33 @@ export type ConfirmCardSetupDeps = {
 
 /**
  * Результат обработки подтверждения холда:
- *  - ignored      — платёж не наш (нет отложенной привязки) — типично шум от шлюза;
- *  - already      — подписка уже активна/в триале (идемпотентность повторного вебхука);
- *  - pending      — карта ещё не введена/не подтверждена;
+ *  - ignored      — intent не найден (шум шлюза ИЛИ повторный вебхук уже обработанного платежа);
+ *  - pending      — карта ещё не введена/не подтверждена (intent не потребляем — ждём);
  *  - failed       — холд не встал (карта отклонена);
  *  - card_reused  — карта уже жгла триал → холд снят, триал НЕ выдан;
- *  - trial_started — выдан carded-триал (новая org);
- *  - reactivated  — оплата из read-only прошла → подписка снова active;
- *  - reactivation_declined — карта привязана, но списание периода отклонено.
+ *  - trial_started — выдан carded-триал (новая org, подписки ещё не было);
+ *  - paid         — списание периода прошло → подписка active (реактивация ИЛИ оплата в триале);
+ *  - declined     — карта привязана, но списание периода отклонено.
  */
 export type ConfirmCardSetupResult =
   | 'ignored'
-  | 'already'
   | 'pending'
   | 'failed'
   | 'card_reused'
   | 'trial_started'
-  | 'reactivated'
-  | 'reactivation_declined';
+  | 'paid'
+  | 'declined';
 
 /**
- * Замыкает оба пути привязки карты по подтверждению auth-hold. Что именно значит привязка —
- * определяется состоянием подписки org (источник правды), а не флагом в intent:
- *  - подписки нет           → require_card_first ([[trial-policy]]) → carded-триал;
- *  - подписка read-only     → реактивация ([[reactivate-subscription]]) → списать период → active;
- *  - подписка активна/триал  → 'already' (идемпотентность повторного вебхука).
+ * Замыкает привязку карты по подтверждению auth-hold. Что значит привязка — определяется
+ * состоянием подписки org (источник правды), а не флагом в intent:
+ *  - подписки нет            → require_card_first ([[trial-policy]]) → carded-триал (без списания);
+ *  - подписка есть (любой статус) → оплата периода: списать план + [[renew]] (продлить дату конца).
+ *    Это единый путь и для реактивации из read-only, и для оплаты во время триала ([[pay-for-period]]).
  *
- * Источник правды по статусу холда — re-fetch у шлюза (тело вебхука неподписано).
+ * Идемпотентность: intent одноразовый — по завершении `consume`. Повторный вебхук того же платежа
+ * не находит intent → 'ignored' (без двойного списания/старта). Источник правды по статусу холда —
+ * re-fetch у шлюза (тело вебхука неподписано).
  */
 export const confirmCardSetup =
   (deps: ConfirmCardSetupDeps) =>
@@ -51,21 +51,22 @@ export const confirmCardSetup =
     const intent = await deps.cardSetupIntents.getByPaymentId(paymentId);
     if (!intent) return ok('ignored');
 
-    const existing = await deps.subscriptions.getByOrg(intent.orgId);
-    // Активная/в триале подписка — повторный вебхук, ничего не делаем.
-    if (existing && !isReadOnly(existing)) return ok('already');
-
     const setup = await deps.gateway.getSetupResult(paymentId);
-    if (setup.isErr()) return err(validationError(setup.error.message));
-    if (setup.value.status === 'pending') return ok('pending');
-    if (setup.value.status === 'failed') return ok('failed');
+    if (setup.isErr()) return err(validationError(setup.error.message)); // сбой шлюза → intent жив, повтор
+    if (setup.value.status === 'pending') return ok('pending'); // карта ещё не введена — intent не трогаем
+    if (setup.value.status === 'failed') {
+      await deps.cardSetupIntents.consume(paymentId); // холд не встал — intent мёртв
+      return ok('failed');
+    }
 
     const now = deps.clock.now().toISOString();
-
     const plan = await deps.plans.get(intent.planId);
-    if (!plan) return err(notFoundError('Тарифный план не найден'));
+    if (!plan) return err(notFoundError('Тарифный план не найден')); // конфиг: не потребляем, разберёмся
 
-    // --- Реактивация: подписка существует и в read-only → оплатить период и активировать. ---
+    const existing = await deps.subscriptions.getByOrg(intent.orgId);
+
+    // --- Есть подписка → оплата периода: списать план по сохранённой карте и продлить. ---
+    // Единый путь для реактивации (expired/canceled) и оплаты во время триала/active.
     if (existing) {
       const methodRef = setup.value.paymentMethodId;
       if (!methodRef) return err(validationError('Шлюз не вернул сохранённый способ оплаты'));
@@ -75,27 +76,27 @@ export const confirmCardSetup =
         amountMinor: plan.priceMinor,
         currency: plan.currency,
         description: `Подписка ${plan.name}`,
-        idempotencyKey: `reactivate:${existing.orgId}:${existing.currentPeriodEnd ?? 'init'}`,
+        // Ключ привязан к текущему концу периода → двойной вебхук не двоит списание.
+        idempotencyKey: `pay:${existing.orgId}:${existing.currentPeriodEnd ?? existing.trialEndsAt ?? 'init'}`,
       });
-      if (charge.isErr()) return err(validationError(charge.error.message));
+      if (charge.isErr()) return err(validationError(charge.error.message)); // сеть/шлюз → intent жив, повтор
 
-      // Проверочный холд больше не нужен — деньги периода уже списаны отдельно.
+      // Проверочный холд больше не нужен — деньги периода списаны отдельным charge.
       await deps.gateway.releaseHold(paymentId, deps.idGen()); // best-effort
-      if (charge.value.status === 'declined') return ok('reactivation_declined');
+      await deps.cardSetupIntents.consume(paymentId);
+      if (charge.value.status === 'declined') return ok('declined');
 
-      const activated = activate(attachPaymentMethod(existing, methodRef), {
-        now,
-        periodDays: plan.periodDays,
-      });
-      if (activated.isErr()) return err(validationError(activated.error.message));
-      await deps.subscriptions.save(activated.value);
-      return ok('reactivated');
+      const renewed = renew(attachPaymentMethod(existing, methodRef), { now, periodDays: plan.periodDays });
+      if (renewed.isErr()) return err(validationError(renewed.error.message));
+      await deps.subscriptions.save(renewed.value);
+      return ok('paid');
     }
 
-    // --- Триал (новая org): барьер «одна карта = один триал» + старт carded-триала. ---
+    // --- Подписки нет (новая org): барьер «одна карта = один триал» + старт carded-триала. ---
     const fingerprint = setup.value.cardFingerprint;
     if (fingerprint && (await deps.cardLedger.hasUsedTrial(fingerprint))) {
       await deps.gateway.releaseHold(paymentId, deps.idGen()); // best-effort: холд истечёт и сам
+      await deps.cardSetupIntents.consume(paymentId);
       return ok('card_reused');
     }
 
@@ -113,6 +114,7 @@ export const confirmCardSetup =
     if (fingerprint) await deps.cardLedger.markUsed(fingerprint, intent.orgId, now);
     // Снимаем проверочный холд — деньги не списываем, карта осталась сохранённой для автобиллинга.
     await deps.gateway.releaseHold(paymentId, deps.idGen()); // best-effort: при сбое холд истечёт сам
+    await deps.cardSetupIntents.consume(paymentId);
 
     return ok('trial_started');
   };

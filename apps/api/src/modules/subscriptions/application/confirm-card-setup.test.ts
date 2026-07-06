@@ -19,6 +19,9 @@ const makeDeps = (over: {
 }) => {
   const saved: Subscription[] = [];
   const markedCards: string[] = [];
+  // Stateful-стор intent'ов: consume реально удаляет → проверяем идемпотентность повторного вебхука.
+  const intentStore = new Map<string, CardSetupIntent>();
+  if (over.intent !== null) intentStore.set(INTENT.paymentId, over.intent ?? INTENT);
   const releaseHold = vi.fn<BillingGateway['releaseHold']>(() => okAsync(undefined));
   const charge = vi.fn<BillingGateway['charge']>(() => okAsync({ status: over.chargeStatus ?? 'succeeded' }));
   const deps: ConfirmCardSetupDeps = {
@@ -29,8 +32,9 @@ const makeDeps = (over: {
       charge,
     },
     cardSetupIntents: {
-      save: vi.fn(),
-      getByPaymentId: async () => (over.intent === undefined ? INTENT : over.intent),
+      save: async (i) => void intentStore.set(i.paymentId, i),
+      getByPaymentId: async (id) => intentStore.get(id) ?? null,
+      consume: async (id) => void intentStore.delete(id),
     },
     subscriptions: { getByOrg: async () => over.existing ?? null, save: async (s) => void saved.push(s), listTrialingDueBy: async () => [] },
     plans: { get: async () => PLAN, list: async () => [PLAN] },
@@ -41,7 +45,7 @@ const makeDeps = (over: {
     clock: { now: () => NOW },
     idGen: () => 'idem1',
   };
-  return { deps, saved, markedCards, releaseHold, charge };
+  return { deps, saved, markedCards, releaseHold, charge, intentStore };
 };
 
 describe('confirmCardSetup', () => {
@@ -50,20 +54,16 @@ describe('confirmCardSetup', () => {
     expect((await confirmCardSetup(deps)('payX'))._unsafeUnwrap()).toBe('ignored');
   });
 
-  it('подписка уже есть → already (идемпотентность вебхука)', async () => {
-    const { deps, saved } = makeDeps({ existing: { status: 'trialing' } as Subscription });
-    expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('already');
-    expect(saved).toHaveLength(0);
-  });
-
-  it('холд ещё не подтверждён → pending', async () => {
-    const { deps } = makeDeps({ setup: { status: 'pending', cardFingerprint: null, paymentMethodId: null } });
+  it('холд ещё не подтверждён → pending (intent не потребляем)', async () => {
+    const { deps, intentStore } = makeDeps({ setup: { status: 'pending', cardFingerprint: null, paymentMethodId: null } });
     expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('pending');
+    expect(intentStore.has('pay1')).toBe(true); // ждём ввод карты — intent жив
   });
 
-  it('карта отклонена → failed', async () => {
-    const { deps } = makeDeps({ setup: { status: 'failed', cardFingerprint: null, paymentMethodId: null } });
+  it('карта отклонена → failed, intent потреблён', async () => {
+    const { deps, intentStore } = makeDeps({ setup: { status: 'failed', cardFingerprint: null, paymentMethodId: null } });
     expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('failed');
+    expect(intentStore.has('pay1')).toBe(false);
   });
 
   it('карта уже жгла триал → card_reused, холд снят, триал не выдан', async () => {
@@ -73,7 +73,7 @@ describe('confirmCardSetup', () => {
     expect(releaseHold).toHaveBeenCalledOnce();
   });
 
-  it('успех → trial_started: carded-триал сохранён, карта в ledger, холд снят', async () => {
+  it('нет подписки → trial_started: carded-триал сохранён, карта в ledger, холд снят', async () => {
     const { deps, saved, markedCards, releaseHold } = makeDeps({});
     expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('trial_started');
     expect(saved).toHaveLength(1);
@@ -83,21 +83,47 @@ describe('confirmCardSetup', () => {
     expect(releaseHold).toHaveBeenCalledOnce();
   });
 
-  it('read-only подписка + списание прошло → reactivated, период активирован, без ledger-барьера', async () => {
-    const expired = { orgId: 'org1', status: 'expired', planId: 'plan1', currentPeriodEnd: null, everPaid: false } as Subscription;
+  it('повторный вебхук после обработки → ignored (intent одноразовый)', async () => {
+    const { deps, saved } = makeDeps({});
+    await confirmCardSetup(deps)('pay1'); // trial_started, intent потреблён
+    expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('ignored');
+    expect(saved).toHaveLength(1); // без второго старта
+  });
+
+  it('оплата во время триала (без карты на файле) → paid, период клеится к концу триала', async () => {
+    const trialing = {
+      orgId: 'org1',
+      planId: 'plan1',
+      status: 'trialing',
+      trialEndsAt: '2026-07-13T00:00:00.000Z',
+      currentPeriodEnd: null,
+      paymentMethodAttached: false,
+      billingMethodRef: null,
+      everPaid: false,
+    } as Subscription;
+    const { deps, saved, markedCards, charge } = makeDeps({ existing: trialing });
+    expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('paid');
+    expect(charge).toHaveBeenCalledOnce();
+    expect(saved[0]!.status).toBe('active');
+    expect(saved[0]!.currentPeriodEnd).toBe('2026-08-12T00:00:00.000Z'); // конец триала + период
+    expect(markedCards).toHaveLength(0); // оплата, не триал → карту в trial-ledger не пишем
+  });
+
+  it('read-only подписка + списание прошло → paid, период активирован, без ledger-барьера', async () => {
+    const expired = { orgId: 'org1', status: 'expired', planId: 'plan1', trialEndsAt: null, currentPeriodEnd: null, everPaid: false } as Subscription;
     const { deps, saved, markedCards, charge } = makeDeps({ existing: expired });
-    expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('reactivated');
+    expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('paid');
     expect(charge).toHaveBeenCalledOnce();
     expect(saved).toHaveLength(1);
     expect(saved[0]!.status).toBe('active');
     expect(saved[0]!.everPaid).toBe(true);
-    expect(markedCards).toHaveLength(0); // оплата, не триал → карту в trial-ledger не пишем
+    expect(markedCards).toHaveLength(0);
   });
 
-  it('read-only подписка + списание отклонено → reactivation_declined, подписка не меняется', async () => {
-    const expired = { orgId: 'org1', status: 'expired', planId: 'plan1', currentPeriodEnd: null } as Subscription;
+  it('read-only подписка + списание отклонено → declined, подписка не меняется', async () => {
+    const expired = { orgId: 'org1', status: 'expired', planId: 'plan1', trialEndsAt: null, currentPeriodEnd: null } as Subscription;
     const { deps, saved } = makeDeps({ existing: expired, chargeStatus: 'declined' });
-    expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('reactivation_declined');
+    expect((await confirmCardSetup(deps)('pay1'))._unsafeUnwrap()).toBe('declined');
     expect(saved).toHaveLength(0);
   });
 });

@@ -96,7 +96,7 @@ export const attachPaymentMethod = (sub: Subscription, billingMethodRef: string)
 
 /**
  * Что делать по наступлении конца триала. Чистое решение — IO (списание) делает шелл,
- * затем зовёт activate (успех) или lapseTrial (провал/нет карты).
+ * затем зовёт renew (успех) или lapseTrial (провал/нет карты).
  */
 export type TrialExpiryDecision =
   | { readonly kind: 'not_yet' }
@@ -120,22 +120,31 @@ export const lapseTrial = (sub: Subscription): Result<Subscription, Subscription
     : err({ code: 'invalid_transition', message: `Нельзя завершить триал из статуса ${sub.status}` });
 
 /**
- * Платёж захвачен → active. Легально из trialing (автобиллинг/ручная оплата),
- * expired (оплата после лапса) и canceled (повторная подписка).
+ * Платёж захвачен → active. Оплаченный период КЛЕИТСЯ к текущей дате окончания, а не считается
+ * от now: база = max(now, конец триала, конец оплаченного периода). Значит оплата в середине
+ * триала не сжигает остаток — период добавляется сверху. Легально из любого статуса:
+ *  - trialing → продление (остаток триала сохраняется, сверху оплаченный период);
+ *  - active   → продление активной подписки (ещё период сверх текущего конца);
+ *  - expired/canceled → оплата из read-only (реактивация).
+ *
+ * Функция чистая и всегда успешна; защита от двойного списания — на уровне use-case
+ * (idempotencyKey шлюза), а не здесь.
  */
-export const activate = (
+export const renew = (
   sub: Subscription,
   params: { readonly now: string; readonly periodDays: number },
 ): Result<Subscription, SubscriptionError> => {
-  if (sub.status === 'active') {
-    return err({ code: 'invalid_transition', message: 'Подписка уже активна' });
-  }
+  const baseMs = Math.max(
+    new Date(params.now).getTime(),
+    sub.trialEndsAt ? new Date(sub.trialEndsAt).getTime() : 0,
+    sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd).getTime() : 0,
+  );
   return ok({
     ...sub,
     status: 'active',
     everPaid: true,
     trialEndsAt: null,
-    currentPeriodEnd: addDays(params.now, params.periodDays),
+    currentPeriodEnd: addDays(new Date(baseMs).toISOString(), params.periodDays),
   });
 };
 

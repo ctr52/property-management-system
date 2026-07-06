@@ -59,19 +59,19 @@ export const SubscribeResultSchema = z.discriminatedUnion('kind', [
 ]);
 export type SubscribeResult = z.infer<typeof SubscribeResultSchema>;
 
-/** Куда вернуть пользователя после привязки карты при оплате из read-only. */
-export const ReactivateInputSchema = z.object({ returnUrl: z.string().url() });
-export type ReactivateInput = z.infer<typeof ReactivateInputSchema>;
+/** Куда вернуть пользователя после привязки карты при оплате периода (ветка без карты на файле). */
+export const PayInputSchema = z.object({ returnUrl: z.string().url() });
+export type PayInput = z.infer<typeof PayInputSchema>;
 
 /**
- * Итог оплаты из read-only (expired/canceled):
- *  - activated     — карта на файле, списание прошло, подписка снова active;
+ * Итог оплаты периода (из любого статуса: продление триала/active ИЛИ реактивация из read-only):
+ *  - paid          — карта на файле, списание прошло, подписка active (дата конца продлена);
  *  - declined      — карта на файле отклонена (нужна другая);
- *  - card_required — карты нет → редирект на привязку (setupUrl), активация замкнётся на вебхуке.
+ *  - card_required — карты нет → редирект на привязку (setupUrl), списание замкнётся на вебхуке.
  */
-export const ReactivateResultSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('activated'), subscription: SubscriptionViewSchema }),
+export const PayResultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('paid'), subscription: SubscriptionViewSchema }),
   z.object({ kind: z.literal('declined') }),
   z.object({ kind: z.literal('card_required'), setupUrl: z.string() }),
 ]);
-export type ReactivateResult = z.infer<typeof ReactivateResultSchema>;
+export type PayResult = z.infer<typeof PayResultSchema>;
