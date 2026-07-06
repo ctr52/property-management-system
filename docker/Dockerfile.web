@@ -1,0 +1,16 @@
+# Сборка SPA (Vite) → статика, которую отдаёт Caddy.
+# Caddy же проксирует /api/* на контейнер api:3000 (тот же origin, как ждёт hc('/api')).
+
+# --- Стадия сборки ---
+FROM node:20-slim AS build
+RUN corepack enable
+WORKDIR /app
+COPY . .
+RUN pnpm install --frozen-lockfile
+# Фронт ходит на тот же origin по /api → build-time переменные окружения не нужны.
+RUN pnpm --filter @pms/web build
+
+# --- Стадия рантайма ---
+FROM caddy:2-alpine
+COPY docker/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /app/apps/web/dist /srv

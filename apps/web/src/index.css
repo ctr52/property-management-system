@@ -1,0 +1,13 @@
+/* Только глобальный сброс. Стили элементов живут в UI-kit (Emotion). */
+:root {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #1a1a1a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}

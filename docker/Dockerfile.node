@@ -1,0 +1,21 @@
+# Общий образ для Node-сервисов монорепо: @pms/api и @pms/sandbox.
+# Оба запускаются через tsx напрямую (отдельной сборки нет, см. CLAUDE.md).
+# Какой сервис поднять — решает `command` в docker-compose.prod.yml.
+FROM node:20-slim
+
+# pnpm той же версии, что зафиксирована в package.json → packageManager.
+RUN corepack enable
+
+WORKDIR /app
+
+# Копируем весь монорепо: workspace-зависимости (workspace:*) требуют,
+# чтобы все пакеты были на месте. node_modules/.data/dist отсечены .dockerignore.
+COPY . .
+
+RUN pnpm install --frozen-lockfile
+
+# Порт API. Sandbox переопределяет command и слушает свои 4000–4011.
+EXPOSE 3000
+
+# Дефолт — API; для sandbox команда переопределяется в compose.
+CMD ["pnpm", "--filter", "@pms/api", "start"]

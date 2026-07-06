@@ -1,0 +1,71 @@
+# Прод-стенд PMS на одной cloud.ru ВМ.
+# Всё в одной docker-сети: web (фронт+прокси) наружу, api и sandbox — внутри.
+#
+# ВНИМАНИЕ: эмуляторы (sandbox) — это ДЕМО-режим на фейковых интеграциях.
+# Появятся реальные ключи площадок → выключаем sandbox и переставляем
+# *_API_BASE ниже на боевые адреса (тогда же нужен домен + HTTPS для вебхуков).
+
+name: pms
+
+services:
+  # --- Фронт: статика SPA + reverse-proxy /api → api:3000 ---
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+
+  # --- Бэкенд Hono + встроенная БД PGlite ---
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    restart: unless-stopped
+    command: ["pnpm", "--filter", "@pms/api", "start"]
+    # Секреты (YOOKASSA_*, тарифы, публичный URL) приезжают из GitHub Secret PROD_ENV.
+    env_file:
+      - .env
+    # Топология стенда. Переопределяет одноимённые значения из .env,
+    # поэтому адреса площадок/платежей тут указывать в .env НЕ нужно.
+    environment:
+      PORT: "3000"
+      # Данные PGlite — в постоянном томе, переживают передеплой.
+      PG_DATA: /data/pg
+      # Внутри compose-сети площадки и платёжки — это эмуляторы sandbox.
+      AVITO_API_BASE: http://sandbox:4001
+      CIAN_API_BASE: http://sandbox:4002
+      ROBOKASSA_API_BASE: http://sandbox:4010
+      TOCHKA_API_BASE: http://sandbox:4011
+    volumes:
+      - pgdata:/data
+    expose:
+      - "3000"
+    depends_on:
+      - sandbox
+
+  # --- Эмуляторы площадок и платёжек (Avito/Cian/Robokassa/Tochka) ---
+  # Один процесс, много портов. Наружу НЕ публикуется (вариант A): виден только внутри сети.
+  sandbox:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    restart: unless-stopped
+    command: ["pnpm", "--filter", "@pms/sandbox", "start"]
+    environment:
+      # Эмулятор шлёт вебхуки обратно в систему; API смонтирован под /api,
+      # поэтому базу даём без суффикса — путь /api/... эмулятор добавляет сам.
+      SYSTEM_BASE: http://api:3000
+      SANDBOX_HUB_PORT: "4000"
+    expose:
+      - "4000" # хаб-панель
+      - "4001" # Avito
+      - "4002" # Cian
+      - "4010" # Robokassa
+      - "4011" # Tochka
+
+volumes:
+  pgdata:

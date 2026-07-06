@@ -1,0 +1,21 @@
+{
+  "name": "pms",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:mock": "set -a && . ./.env && set +a && pnpm -r --parallel dev",
+    "dev:api": "pnpm --filter @pms/api dev",
+    "dev:web": "pnpm --filter @pms/web dev",
+    "dev:sandbox": "pnpm --filter @pms/sandbox dev",
+    "db:generate": "pnpm --filter @pms/api db:generate",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --if-present test"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@pms/fake-channels",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "comment": "DEPRECATED: заменён на @pms/sandbox (apps/sandbox). Папку apps/fake-channels можно удалить."
+}

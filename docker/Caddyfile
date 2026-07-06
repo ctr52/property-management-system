@@ -1,0 +1,21 @@
+# Фронт стенда: отдаёт SPA и проксирует API на бэкенд.
+#
+# Пока без домена — слушаем :80 на IP машины.
+# Появится домен → замени `:80` на `your-domain.ru` и Caddy сам поднимет
+# HTTPS через Let's Encrypt (тогда же понадобится открыть 443 в security group).
+
+:80 {
+	encode gzip
+
+	# API и все вебхуки — на бэкенд. Префикс /api сохраняем (API смонтирован под /api).
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+
+	# Остальное — статика SPA. Фолбэк на index.html для client-side роутинга.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
