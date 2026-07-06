@@ -1,0 +1,16 @@
+# Не тащим в build-контекст лишнее (ускоряет сборку и уменьшает образы).
+.git
+.idea
+**/node_modules
+.data
+apps/*/.data
+**/dist
+*.log
+coverage
+.turbo
+.DS_Store
+
+# Секреты в образ не кладём — .env приезжает на ВМ отдельно из GitHub Secret.
+.env
+.env.local
+.env.*.local
