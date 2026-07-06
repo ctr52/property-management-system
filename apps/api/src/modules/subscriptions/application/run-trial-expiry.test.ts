@@ -31,6 +31,7 @@ const makeDeps = (due: Subscription[], charge?: BillingGateway['charge']) => {
     plans: { get: async () => PLAN, list: async () => [PLAN] },
     gateway,
     clock: { now: () => NOW },
+    idempotencyKey: (...parts: readonly string[]) => parts.join('|'),
   };
   return { deps, saved, gateway };
 };
@@ -53,9 +54,8 @@ describe('runTrialExpiry', () => {
     expect(saved[0]!.everPaid).toBe(true);
     const chargeArgs = (gateway.charge as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(chargeArgs.amountMinor).toBe(290000);
-    // Ключ идемпотентности — короткий хэш (лимит ЮKassa 64 символа), детерминированный.
-    expect(chargeArgs.idempotencyKey.length).toBeLessThanOrEqual(64);
-    expect(chargeArgs.idempotencyKey).toMatch(/^[0-9a-f]+$/);
+    // Use-case зовёт инъектированный idempotencyKey с частями ('renew', orgId, конец триала).
+    expect(chargeArgs.idempotencyKey).toContain('renew|org2|');
   });
 
   it('carded + карта отклонена → lapse', async () => {

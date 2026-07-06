@@ -109,6 +109,7 @@ import {
 import { subscribeToPlan } from './modules/subscriptions/application/subscribe-to-plan';
 import { confirmCardBinding } from './modules/subscriptions/application/confirm-card-binding';
 import { confirmPeriodPayment } from './modules/subscriptions/application/confirm-period-payment';
+import { gatewayIdempotencyKey } from './shared/idempotency';
 import { payForPeriod } from './modules/subscriptions/application/pay-for-period';
 import { runTrialExpiry } from './modules/subscriptions/application/run-trial-expiry';
 import { toSubscriptionView } from './modules/subscriptions/domain/view';
@@ -674,9 +675,16 @@ const main = async () => {
     cardSetupIntents: cardSetupIntentRepo,
     clock,
     idGen: () => randomUUID(),
+    idempotencyKey: gatewayIdempotencyKey,
   });
   // Фоновое истечение триалов: carded → автобиллинг → active; cardless/отказ → expired (read-only).
-  const runTrialExpiryFn = runTrialExpiry({ subscriptions: subscriptionRepo, plans: planRepo, gateway: billingGateway, clock });
+  const runTrialExpiryFn = runTrialExpiry({
+    subscriptions: subscriptionRepo,
+    plans: planRepo,
+    gateway: billingGateway,
+    clock,
+    idempotencyKey: gatewayIdempotencyKey,
+  });
   scheduler.every(Number(process.env.TRIAL_EXPIRY_POLL_SEC ?? 3600), async () => {
     await runTrialExpiryFn();
   });

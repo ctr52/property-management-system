@@ -1,6 +1,5 @@
 import type { Clock } from '../../../shared/ports';
 import { decideTrialExpiry, lapseTrial, renew, type Subscription } from '../domain/subscription';
-import { gatewayIdempotencyKey } from '../../../shared/idempotency';
 import type { BillingGateway } from '../ports/gateway';
 import type { PlanRepo, SubscriptionRepo } from '../ports/repos';
 
@@ -9,6 +8,8 @@ export type RunTrialExpiryDeps = {
   readonly plans: PlanRepo;
   readonly gateway: BillingGateway;
   readonly clock: Clock;
+  /** Короткий детерминированный ключ идемпотентности из частей (лимит ЮKassa 64 символа). Из composition root. */
+  readonly idempotencyKey: (...parts: readonly string[]) => string;
 };
 
 export type TrialExpirySummary = {
@@ -70,7 +71,7 @@ export const runTrialExpiry =
         currency: plan.currency,
         description: `Подписка ${plan.name}`,
         // Стабилен для этого триала → ретрай не приводит к двойному списанию.
-        idempotencyKey: gatewayIdempotencyKey('renew', sub.orgId, sub.trialEndsAt ?? ''),
+        idempotencyKey: deps.idempotencyKey('renew', sub.orgId, sub.trialEndsAt ?? ''),
       });
 
       if (charge.isErr()) {

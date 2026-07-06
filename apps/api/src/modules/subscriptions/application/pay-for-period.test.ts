@@ -38,6 +38,7 @@ const makeDeps = (over: { existing?: Subscription | null; chargeStatus?: 'succee
     cardSetupIntents: { save: async (i) => void intents.push(i), getByPaymentId: async () => null, consume: async () => {} },
     clock: { now: () => NOW },
     idGen: () => 'idem1',
+    idempotencyKey: (...parts: readonly string[]) => parts.join('|'),
   };
   return { deps, saved, intents, charge, checkoutPeriod };
 };
