@@ -27,7 +27,8 @@ export const isPublicHttpsUrl = (raw: string): boolean => {
     return false;
   }
   if (url.protocol !== 'https:') return false;
-  const host = url.hostname.toLowerCase();
+  // У IPv6 URL.hostname приходит в скобках ('[::1]') — снимаем их для сравнения.
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (host === '::1' || host.startsWith('fc') || host.startsWith('fd')) return false; // IPv6 loopback/ULA
   if (PRIVATE_HOST.test(host)) return false;
   if (isPrivateIpv4(host)) return false;

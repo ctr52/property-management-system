@@ -10,7 +10,13 @@ import type { Reservation, ReservationSource } from '../modules/reservation/doma
  * Фейк AvailabilityPort: тот же инвариант + тиры firm/tentative, вытеснение, истечение —
  * через доменный overlaps, без БД. Для проверки оркестрации use-case'ов.
  */
-export const createFakeAvailability = (knownProperties: readonly string[] = ['p1']) => {
+export const createFakeAvailability = (
+  knownProperties: readonly string[] = ['p1'],
+  // Часы для оценки истечения tentative-холдов. По умолчанию — реальные;
+  // тесты с фиксированным Clock должны прокинуть те же часы, иначе expiresAt
+  // (заданный от фиксированного времени) будет ошибочно считаться протухшим.
+  now: () => string = () => new Date().toISOString(),
+) => {
   type H = {
     id: string;
     orgId: string;
@@ -29,9 +35,9 @@ export const createFakeAvailability = (knownProperties: readonly string[] = ['p1
   const port: AvailabilityPort = {
     hold: async ({ orgId, propertyId, from, to, refId, tier, expiresAt }) => {
       if (!knows(propertyId)) return err(notFoundError('Объект не найден'));
-      const now = new Date().toISOString();
+      const nowIso = now();
       const active = [...holds.values()].filter(
-        (h) => h.orgId === orgId && h.propertyId === propertyId && overlaps(h.from, h.to, from, to) && isActive(h, now),
+        (h) => h.orgId === orgId && h.propertyId === propertyId && overlaps(h.from, h.to, from, to) && isActive(h, nowIso),
       );
       let preemptedRefIds: string[] = [];
       if (tier === 'firm') {
@@ -54,8 +60,8 @@ export const createFakeAvailability = (knownProperties: readonly string[] = ['p1
       if (h) holds.set(holdId, { ...h, tier: 'firm', expiresAt: null });
     },
     releaseExpired: async () => {
-      const now = new Date().toISOString();
-      const expired = [...holds.values()].filter((h) => h.tier === 'tentative' && h.expiresAt !== null && h.expiresAt <= now);
+      const nowIso = now();
+      const expired = [...holds.values()].filter((h) => h.tier === 'tentative' && h.expiresAt !== null && h.expiresAt <= nowIso);
       for (const h of expired) holds.delete(h.id);
       return expired.map((h) => ({ orgId: h.orgId, refId: h.refId }));
     },

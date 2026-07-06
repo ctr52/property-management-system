@@ -12,7 +12,8 @@ const resolver = (map: Record<string, string>): ListingResolver => ({
 });
 
 const mkDeps = (map: Record<string, string>) => {
-  const a = createFakeAvailability();
+  // Те же часы, что и у use-case, — иначе фейк оценит tentative-холд как протухший.
+  const a = createFakeAvailability(['p1'], () => clock.now().toISOString());
   const r = createFakeReservationRepo();
   const run = ingestReservation({
     reservations: r.repo,
