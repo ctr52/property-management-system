@@ -1,5 +1,6 @@
 import type { Clock } from '../../../shared/ports';
 import { decideTrialExpiry, lapseTrial, renew, type Subscription } from '../domain/subscription';
+import { gatewayIdempotencyKey } from '../../../shared/idempotency';
 import type { BillingGateway } from '../ports/gateway';
 import type { PlanRepo, SubscriptionRepo } from '../ports/repos';
 
@@ -69,7 +70,7 @@ export const runTrialExpiry =
         currency: plan.currency,
         description: `Подписка ${plan.name}`,
         // Стабилен для этого триала → ретрай не приводит к двойному списанию.
-        idempotencyKey: `renew:${sub.orgId}:${sub.trialEndsAt}`,
+        idempotencyKey: gatewayIdempotencyKey('renew', sub.orgId, sub.trialEndsAt ?? ''),
       });
 
       if (charge.isErr()) {

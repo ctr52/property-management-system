@@ -53,7 +53,9 @@ describe('runTrialExpiry', () => {
     expect(saved[0]!.everPaid).toBe(true);
     const chargeArgs = (gateway.charge as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(chargeArgs.amountMinor).toBe(290000);
-    expect(chargeArgs.idempotencyKey).toContain('renew:org2:');
+    // Ключ идемпотентности — короткий хэш (лимит ЮKassa 64 символа), детерминированный.
+    expect(chargeArgs.idempotencyKey.length).toBeLessThanOrEqual(64);
+    expect(chargeArgs.idempotencyKey).toMatch(/^[0-9a-f]+$/);
   });
 
   it('carded + карта отклонена → lapse', async () => {

@@ -2,6 +2,7 @@ import { err, ok, type Result } from 'neverthrow';
 import { type AppError, notFoundError, validationError } from '../../../shared/errors';
 import type { Clock, IdGen } from '../../../shared/ports';
 import { attachPaymentMethod, renew, type Subscription } from '../domain/subscription';
+import { gatewayIdempotencyKey } from '../../../shared/idempotency';
 import type { BillingGateway, RedirectInstruction } from '../ports/gateway';
 import type { CardSetupIntentRepo, PlanRepo, SubscriptionRepo } from '../ports/repos';
 
@@ -81,7 +82,7 @@ export const payForPeriod =
       amountMinor: plan.priceMinor,
       currency: plan.currency,
       description: `Подписка ${plan.name}`,
-      idempotencyKey: `pay:${orgId}:${sub.currentPeriodEnd ?? sub.trialEndsAt ?? 'init'}`,
+      idempotencyKey: gatewayIdempotencyKey('pay', orgId, sub.currentPeriodEnd ?? sub.trialEndsAt ?? 'init'),
     });
     if (charge.isErr()) return err(validationError(charge.error.message));
     if (charge.value.status === 'declined') return ok({ kind: 'declined' });
