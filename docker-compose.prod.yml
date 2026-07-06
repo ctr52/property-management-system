@@ -16,6 +16,16 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443" # нужен для HTTPS (Let's Encrypt); без домена просто не используется
+    environment:
+      # Домен для авто-HTTPS. Задаётся в .env (из секрета PROD_ENV).
+      # Пусто → Caddy слушает :80 (только HTTP).
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      # ВАЖНО: сертификаты Let's Encrypt хранятся тут и переживают передеплой.
+      # Без этого тома каждый релиз перезапрашивает серт → упрётесь в лимит LE.
+      - caddydata:/data
+      - caddyconfig:/config
     depends_on:
       - api
 
@@ -69,3 +79,5 @@ services:
 
 volumes:
   pgdata:
+  caddydata:   # сертификаты + ACME-аккаунт Let's Encrypt (переживают передеплой)
+  caddyconfig:
