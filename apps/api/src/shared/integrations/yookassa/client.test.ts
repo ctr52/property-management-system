@@ -1,6 +1,6 @@
 import { okAsync } from 'neverthrow';
 import { describe, expect, it, vi } from 'vitest';
-import { createYooKassaClient, toPayment, type HttpJson, type YooKassaCredentials } from './client';
+import { createYooKassaClient, toPayment, toPaymentMethod, type HttpJson, type YooKassaCredentials } from './client';
 
 const CREDS: YooKassaCredentials = { shopId: 'shop1', secretKey: 'secret1' };
 
@@ -99,5 +99,53 @@ describe('createYooKassaClient.createPayment', () => {
     });
 
     expect(r._unsafeUnwrapErr().status).toBe(400);
+  });
+});
+
+const methodDto = (over: Record<string, unknown> = {}) => ({
+  id: 'pm_1',
+  type: 'bank_card',
+  status: 'pending',
+  confirmation: { type: 'redirect', confirmation_url: 'https://yoo/bind' },
+  card: { first6: '555555', last4: '4444', expiry_year: '2030', expiry_month: '12' },
+  ...over,
+});
+
+describe('toPaymentMethod', () => {
+  it('маппит DTO способа оплаты (id, status, confirmationUrl, card)', () => {
+    const m = toPaymentMethod(methodDto({ status: 'active' }))!;
+    expect(m).toMatchObject({ id: 'pm_1', status: 'active', confirmationUrl: 'https://yoo/bind' });
+    expect(m.card?.last4).toBe('4444');
+  });
+
+  it('мусор → null', () => {
+    expect(toPaymentMethod(null)).toBeNull();
+    expect(toPaymentMethod({ id: 'x' })).toBeNull(); // нет status
+  });
+});
+
+describe('createYooKassaClient.createPaymentMethod (zero-amount привязка)', () => {
+  it('POST /payment_methods с type:bank_card + confirmation, отдаёт redirect', async () => {
+    const http = vi.fn<HttpJson>(() => okAsync({ status: 200, json: methodDto() }));
+    const client = createYooKassaClient({ apiBase: 'https://api.yookassa.ru/v3', http });
+
+    const r = await client.createPaymentMethod(CREDS, { returnUrl: 'https://app/return', idempotencyKey: 'idem-b' });
+
+    expect(r._unsafeUnwrap().confirmationUrl).toBe('https://yoo/bind');
+    const req = http.mock.calls[0]![0];
+    expect(req.url).toBe('https://api.yookassa.ru/v3/payment_methods');
+    expect(req.headers['idempotence-key']).toBe('idem-b');
+    const body = JSON.parse(req.body!);
+    expect(body.type).toBe('bank_card');
+    expect(body.confirmation).toEqual({ type: 'redirect', return_url: 'https://app/return' });
+  });
+
+  it('getPaymentMethod → GET /payment_methods/{id}', async () => {
+    const http = vi.fn<HttpJson>(() => okAsync({ status: 200, json: methodDto({ status: 'active' }) }));
+    const client = createYooKassaClient({ apiBase: 'https://api.yookassa.ru/v3', http });
+
+    const r = await client.getPaymentMethod(CREDS, 'pm_1');
+    expect(r._unsafeUnwrap().status).toBe('active');
+    expect(http.mock.calls[0]![0]).toMatchObject({ method: 'GET', url: 'https://api.yookassa.ru/v3/payment_methods/pm_1' });
   });
 });

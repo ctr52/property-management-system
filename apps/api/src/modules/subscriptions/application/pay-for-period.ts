@@ -2,7 +2,7 @@ import { err, ok, type Result } from 'neverthrow';
 import { type AppError, notFoundError, validationError } from '../../../shared/errors';
 import type { Clock, IdGen } from '../../../shared/ports';
 import { attachPaymentMethod, renew, type Subscription } from '../domain/subscription';
-import type { BillingGateway, SetupInstruction } from '../ports/gateway';
+import type { BillingGateway, RedirectInstruction } from '../ports/gateway';
 import type { CardSetupIntentRepo, PlanRepo, SubscriptionRepo } from '../ports/repos';
 
 export type PayForPeriodDeps = {
@@ -22,14 +22,14 @@ export type PayForPeriodInput = {
 
 /**
  * Итог оплаты периода:
- *  - paid          — карта на файле, списание прошло → подписка active (дата конца продлена);
- *  - declined      — карта на файле отклонена (нужна другая);
- *  - card_required — карты нет → редирект на привязку (setupUrl); списание/продление — на вебхуке холда.
+ *  - paid      — карта на файле, списание прошло → подписка active (дата конца продлена);
+ *  - declined  — карта на файле отклонена (нужна другая);
+ *  - redirect  — карты нет → прямая оплата на хостед-странице шлюза; продление — на вебхуке payment.succeeded.
  */
 export type PayForPeriodOutcome =
   | { readonly kind: 'paid'; readonly subscription: Subscription }
   | { readonly kind: 'declined' }
-  | { readonly kind: 'card_required'; readonly setup: SetupInstruction };
+  | { readonly kind: 'redirect'; readonly setup: RedirectInstruction };
 
 /**
  * Оплата периода подписки — универсальный вход для ЛЮБОГО статуса:
@@ -38,8 +38,8 @@ export type PayForPeriodOutcome =
  * Проверок абьюза нет (в отличие от [[trial-policy]]): клиент платит, а не получает триал.
  *
  *  - есть `billingMethodRef` (карта на файле) → синхронное списание → renew;
- *  - нет карты → auth-hold (setupPaymentMethod) + отложенный intent; реальное списание и renew
- *    делает [[confirm-card-setup]] на подтверждении холда (видит существующую подписку).
+ *  - нет карты → прямой платёж на стоимость плана (checkoutPeriod) + отложенный intent; продление
+ *    делает [[confirm-period-payment]] на вебхуке payment.succeeded (видит существующую подписку).
  *
  * Идемпотентность списания: ключ привязан к текущему концу периода — двойной клик не двоит списание.
  */
@@ -52,17 +52,19 @@ export const payForPeriod =
     const plan = await deps.plans.get(sub.planId);
     if (!plan) return err(notFoundError('Тарифный план не найден'));
 
-    // Нет карты на файле → собираем её через auth-hold, списание/продление замкнётся на вебхуке.
+    // Нет карты на файле → прямая оплата стоимости плана; продление замкнётся на вебхуке payment.succeeded.
     if (sub.billingMethodRef === null) {
-      const setup = await deps.gateway.setupPaymentMethod({
+      const setup = await deps.gateway.checkoutPeriod({
         orgId,
         planId: plan.id,
+        amountMinor: plan.priceMinor,
+        currency: plan.currency,
         returnUrl: input.returnUrl,
         idempotencyKey: deps.idGen(),
       });
       if (setup.isErr()) return err(validationError(setup.error.message));
       const paymentId = setup.value.externalId;
-      if (!paymentId) return err(validationError('Шлюз не вернул id платежа для отслеживания привязки карты'));
+      if (!paymentId) return err(validationError('Шлюз не вернул id платежа для отслеживания оплаты'));
       await deps.cardSetupIntents.save({
         paymentId,
         orgId,
@@ -70,7 +72,7 @@ export const payForPeriod =
         phoneE164: '', // при оплате не используется (проверок телефона нет)
         createdAt: deps.clock.now().toISOString(),
       });
-      return ok({ kind: 'card_required', setup: setup.value });
+      return ok({ kind: 'redirect', setup: setup.value });
     }
 
     // Карта на файле → списываем сразу.

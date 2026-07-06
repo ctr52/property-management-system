@@ -65,13 +65,13 @@ export type PayInput = z.infer<typeof PayInputSchema>;
 
 /**
  * Итог оплаты периода (из любого статуса: продление триала/active ИЛИ реактивация из read-only):
- *  - paid          — карта на файле, списание прошло, подписка active (дата конца продлена);
- *  - declined      — карта на файле отклонена (нужна другая);
- *  - card_required — карты нет → редирект на привязку (setupUrl), списание замкнётся на вебхуке.
+ *  - paid     — карта на файле, списание прошло, подписка active (дата конца продлена);
+ *  - declined — карта на файле отклонена (нужна другая);
+ *  - redirect — карты нет → редирект на прямую оплату (redirectUrl), продление замкнётся на вебхуке.
  */
 export const PayResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('paid'), subscription: SubscriptionViewSchema }),
   z.object({ kind: z.literal('declined') }),
-  z.object({ kind: z.literal('card_required'), setupUrl: z.string() }),
+  z.object({ kind: z.literal('redirect'), redirectUrl: z.string() }),
 ]);
 export type PayResult = z.infer<typeof PayResultSchema>;

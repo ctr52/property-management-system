@@ -30,8 +30,9 @@ export type TrialEligibilityLedger = {
 };
 
 /**
- * Отложенная привязка карты (require_card_first): между редиректом на auth-hold и его
- * подтверждением по вебхуку. Ключ — paymentId холда (externalId из SetupInstruction).
+ * Отложенная сессия сбора карты: между редиректом на шлюз и подтверждением по вебхуку.
+ * Общая и для привязки карты (триал require_card_first), и для прямой оплаты периода.
+ * Ключ — externalId сессии (payment_method_id привязки либо payment_id оплаты, RedirectInstruction).
  */
 export type CardSetupIntent = {
   readonly paymentId: string;

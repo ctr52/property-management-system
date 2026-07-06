@@ -3,7 +3,7 @@ import { type AppError, conflictError, notFoundError, validationError } from '..
 import type { Clock, IdGen } from '../../../shared/ports';
 import { beginTrial, type Subscription } from '../domain/subscription';
 import { decideTrialPolicy } from '../domain/trial-policy';
-import type { SetupInstruction, BillingGateway } from '../ports/gateway';
+import type { RedirectInstruction, BillingGateway } from '../ports/gateway';
 import type { PhoneVerificationGate } from '../ports/phone-verification';
 import type {
   CardSetupIntentRepo,
@@ -40,13 +40,13 @@ export type SubscribeToPlanInput = {
 /**
  * Итог попытки подписки:
  *  - trial_started — выдан cardless-триал (grant_trial);
- *  - card_required — нужна привязка карты (require_card_first): редирект на auth-hold,
+ *  - card_required — нужна привязка карты (require_card_first): редирект на zero-amount привязку,
  *    сам триал стартует на подтверждении холда (вебхук), не здесь;
  *  - rejected — политика отказала (нет подтверждённого телефона).
  */
 export type SubscribeOutcome =
   | { readonly kind: 'trial_started'; readonly subscription: Subscription }
-  | { readonly kind: 'card_required'; readonly setup: SetupInstruction; readonly reason: string }
+  | { readonly kind: 'card_required'; readonly setup: RedirectInstruction; readonly reason: string }
   | { readonly kind: 'rejected'; readonly reason: string };
 
 /**
@@ -74,14 +74,14 @@ export const subscribeToPlan =
     }
 
     if (policy.kind === 'require_card_first') {
-      const setup = await deps.gateway.setupPaymentMethod({
+      const setup = await deps.gateway.bindCard({
         orgId,
         planId: plan.id,
         returnUrl: input.returnUrl,
         idempotencyKey: deps.idGen(),
       });
       if (setup.isErr()) return err(validationError(setup.error.message));
-      // Запоминаем отложенную привязку: триал стартует на подтверждении холда (confirmCardSetup).
+      // Запоминаем отложенную привязку: триал стартует на подтверждении привязки (confirmCardBinding).
       const paymentId = setup.value.externalId;
       if (!paymentId) return err(validationError('Шлюз не вернул id платежа для отслеживания привязки карты'));
       await deps.cardSetupIntents.save({

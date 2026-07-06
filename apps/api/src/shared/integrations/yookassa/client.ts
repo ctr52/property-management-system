@@ -58,6 +58,18 @@ export type YooKassaPayment = {
   readonly card: YooKassaCard | null;
 };
 
+/** Статус сохранённого способа оплаты (zero-amount привязка карты без списания). */
+export type YooKassaPaymentMethodStatus = 'pending' | 'active' | 'inactive';
+
+/** Нормализованный способ оплаты ЮKassa (объект /payment_methods) для привязки карты без списания. */
+export type YooKassaPaymentMethod = {
+  readonly id: string;
+  readonly status: YooKassaPaymentMethodStatus;
+  /** URL подтверждения (redirect) — пока привязка pending и ждёт ввода карты. */
+  readonly confirmationUrl: string | null;
+  readonly card: YooKassaCard | null;
+};
+
 export type CreatePaymentParams = {
   readonly amountMinor: number;
   readonly currency: string;
@@ -97,6 +109,16 @@ export type YooKassaClient = {
     credentials: YooKassaCredentials,
     paymentId: string,
   ) => ResultAsync<YooKassaPayment, YooKassaError>;
+  /** Привязать карту БЕЗ списания (zero-amount, POST /payment_methods) → redirect + payment_method_id. */
+  readonly createPaymentMethod: (
+    credentials: YooKassaCredentials,
+    params: { readonly returnUrl: string; readonly idempotencyKey: string },
+  ) => ResultAsync<YooKassaPaymentMethod, YooKassaError>;
+  /** Свериться по привязке карты (payment_method.active приходит вебхуком без подписи). */
+  readonly getPaymentMethod: (
+    credentials: YooKassaCredentials,
+    paymentMethodId: string,
+  ) => ResultAsync<YooKassaPaymentMethod, YooKassaError>;
 };
 
 const minorToValue = (amountMinor: number): string => (amountMinor / 100).toFixed(2);
@@ -127,6 +149,32 @@ export const toPayment = (dto: unknown): YooKassaPayment | null => {
     confirmationUrl: typeof confirmation.confirmation_url === 'string' ? confirmation.confirmation_url : null,
     paymentMethodId: typeof method?.id === 'string' ? method.id : null,
     paymentMethodSaved: method?.saved === true,
+    card: card
+      ? {
+          first6: typeof card.first6 === 'string' ? card.first6 : null,
+          last4: typeof card.last4 === 'string' ? card.last4 : null,
+          expiryYear: typeof card.expiry_year === 'string' ? card.expiry_year : null,
+          expiryMonth: typeof card.expiry_month === 'string' ? card.expiry_month : null,
+        }
+      : null,
+  };
+};
+
+/** Чистый маппер DTO способа оплаты (/payment_methods) → нормализованная привязка карты. */
+export const toPaymentMethod = (dto: unknown): YooKassaPaymentMethod | null => {
+  if (typeof dto !== 'object' || dto === null) return null;
+  const d = dto as Record<string, unknown>;
+  const id = typeof d.id === 'string' ? d.id : null;
+  const status = d.status as YooKassaPaymentMethodStatus | undefined;
+  if (!id || !status) return null;
+
+  const confirmation = (d.confirmation ?? {}) as Record<string, unknown>;
+  const card = (d.card ?? null) as Record<string, unknown> | null;
+
+  return {
+    id,
+    status,
+    confirmationUrl: typeof confirmation.confirmation_url === 'string' ? confirmation.confirmation_url : null,
     card: card
       ? {
           first6: typeof card.first6 === 'string' ? card.first6 : null,
@@ -184,6 +232,15 @@ export const createYooKassaClient = (deps: YooKassaClientDeps): YooKassaClient =
     return payment ? okAsync(payment) : errAsync({ code: 'yookassa_error', message: 'Не удалось разобрать ответ ЮKassa' });
   };
 
+  const parseMethodResponse = (res: { status: number; json: unknown }): ResultAsync<YooKassaPaymentMethod, YooKassaError> => {
+    if (res.status >= 400) {
+      const e = res.json as { description?: string } | null;
+      return errAsync({ code: 'yookassa_error', message: `ЮKassa вернула ${res.status}: ${e?.description ?? 'ошибка'}`, status: res.status });
+    }
+    const method = toPaymentMethod(res.json);
+    return method ? okAsync(method) : errAsync({ code: 'yookassa_error', message: 'Не удалось разобрать ответ ЮKassa' });
+  };
+
   return {
     createPayment: (credentials, params) =>
       post(credentials, '/payments', params.idempotencyKey, {
@@ -211,5 +268,28 @@ export const createYooKassaClient = (deps: YooKassaClientDeps): YooKassaClient =
           headers: { authorization: authHeader(credentials) },
         })
         .andThen(parseResponse),
+
+    createPaymentMethod: (credentials, params) =>
+      deps
+        .http({
+          method: 'POST',
+          url: `${deps.apiBase}/payment_methods`,
+          headers: {
+            authorization: authHeader(credentials),
+            'idempotence-key': params.idempotencyKey,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ type: 'bank_card', confirmation: { type: 'redirect', return_url: params.returnUrl } }),
+        })
+        .andThen(parseMethodResponse),
+
+    getPaymentMethod: (credentials, paymentMethodId) =>
+      deps
+        .http({
+          method: 'GET',
+          url: `${deps.apiBase}/payment_methods/${paymentMethodId}`,
+          headers: { authorization: authHeader(credentials) },
+        })
+        .andThen(parseMethodResponse),
   };
 };

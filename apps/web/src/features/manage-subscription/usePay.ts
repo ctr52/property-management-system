@@ -6,9 +6,9 @@ import { subscriptionKeys } from '../../entities/subscription';
 /**
  * Оплата периода подписки — единое действие для ЛЮБОГО статуса: продление триала/active или
  * реактивация из read-only. Путь выбирает сервер:
- *  - paid          — карта на файле, списание прошло → инвалидируем подписку, дата конца сдвигается;
- *  - card_required — карты нет → редирект на привязку (хостед-страница шлюза), продление на вебхуке;
- *  - declined      — карта отклонена → виджет показывает сообщение из mutation.data.
+ *  - paid     — карта на файле, списание прошло → инвалидируем подписку, дата конца сдвигается;
+ *  - redirect — карты нет → редирект на прямую оплату (хостед-страница шлюза), продление на вебхуке;
+ *  - declined — карта отклонена → виджет показывает сообщение из mutation.data.
  *
  * returnUrl шлюзу = текущая страница биллинга; фронт сам на шлюз не ходит, только следует redirect.
  */
@@ -23,8 +23,8 @@ export const usePay = () => {
       return res.json();
     },
     onSuccess: (result) => {
-      if (result.kind === 'card_required') {
-        window.location.assign(result.setupUrl);
+      if (result.kind === 'redirect') {
+        window.location.assign(result.redirectUrl);
         return;
       }
       if (result.kind === 'paid') {

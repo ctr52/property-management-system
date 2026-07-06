@@ -22,21 +22,29 @@ export type SubscriptionRouteDeps = {
   readonly getSubscription: (orgId: string) => Promise<SubscriptionView | null>;
   /** Витрина доступных тарифов (для формы подписки). */
   readonly getPlans: () => Promise<readonly PlanView[]>;
-  /** Оплата периода (продление триала/active ИЛИ реактивация из read-only) → active либо редирект на карту. */
+  /** Оплата периода (продление триала/active ИЛИ реактивация из read-only) → active либо редирект на оплату. */
   readonly pay: (orgId: string, input: PayForPeriodInput) => Promise<Result<PayForPeriodOutcome, AppError>>;
-  /** Подтверждение auth-hold по вебхуку шлюза → старт carded-триала / оплата периода. paymentId из тела. */
-  readonly confirmCardSetup: (paymentId: string) => Promise<unknown>;
+  /** Вебхук payment_method.active → старт carded-триала (require_card_first). id из тела уведомления. */
+  readonly confirmCardBinding: (bindingId: string) => Promise<unknown>;
+  /** Вебхук payment.succeeded/canceled → оплата периода: продление подписки. id из тела уведомления. */
+  readonly confirmPeriodPayment: (paymentId: string) => Promise<unknown>;
 };
 
 /**
  * ПУБЛИЧНЫЙ роут вебхука биллинг-шлюза (без авторизации). Тело неподписано → доверять ему нельзя:
- * берём только id платежа, остальное use-case сверяет re-fetch'ем у шлюза. Быстрый ack.
+ * берём только event + id объекта, остальное use-case сверяет re-fetch'ем у шлюза. Быстрый ack.
+ *  - payment_method.active         → привязка карты для триала (confirmCardBinding);
+ *  - payment.succeeded / .canceled → оплата периода (confirmPeriodPayment).
  */
 export const createPublicSubscriptionRoutes = (deps: SubscriptionRouteDeps) =>
   new Hono().post('/billing-webhooks/yookassa', async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { object?: { id?: unknown } } | null;
+    const body = (await c.req.json().catch(() => null)) as { event?: unknown; object?: { id?: unknown } } | null;
     const id = body?.object?.id;
-    if (typeof id === 'string') await deps.confirmCardSetup(id);
+    const event = body?.event;
+    if (typeof id === 'string') {
+      if (event === 'payment_method.active') await deps.confirmCardBinding(id);
+      else if (event === 'payment.succeeded' || event === 'payment.canceled') await deps.confirmPeriodPayment(id);
+    }
     return c.json({ accepted: true });
   });
 
@@ -59,8 +67,8 @@ const toPayResult = (o: PayForPeriodOutcome): PayResult => {
       return { kind: 'paid', subscription: toSubscriptionView(o.subscription) };
     case 'declined':
       return { kind: 'declined' };
-    case 'card_required':
-      return { kind: 'card_required', setupUrl: o.setup.url };
+    case 'redirect':
+      return { kind: 'redirect', redirectUrl: o.setup.url };
   }
 };
 

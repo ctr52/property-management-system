@@ -107,7 +107,8 @@ import {
   createDrizzleTrialEligibilityLedger,
 } from './modules/subscriptions/adapters/drizzle/subscription-repos.drizzle';
 import { subscribeToPlan } from './modules/subscriptions/application/subscribe-to-plan';
-import { confirmCardSetup } from './modules/subscriptions/application/confirm-card-setup';
+import { confirmCardBinding } from './modules/subscriptions/application/confirm-card-binding';
+import { confirmPeriodPayment } from './modules/subscriptions/application/confirm-period-payment';
 import { payForPeriod } from './modules/subscriptions/application/pay-for-period';
 import { runTrialExpiry } from './modules/subscriptions/application/run-trial-expiry';
 import { toSubscriptionView } from './modules/subscriptions/domain/view';
@@ -639,8 +640,6 @@ const main = async () => {
       shopId: process.env.YOOKASSA_PLATFORM_SHOP_ID ?? '',
       secretKey: process.env.YOOKASSA_PLATFORM_SECRET_KEY ?? '',
     },
-    verificationAmountMinor: Number(process.env.CARD_HOLD_AMOUNT_MINOR ?? 1000), // ₽10
-    currency: 'RUB',
   });
   const subscribeToPlanFn = subscribeToPlan({
     plans: planRepo,
@@ -653,14 +652,20 @@ const main = async () => {
     clock,
     idGen: () => randomUUID(),
   });
-  const confirmCardSetupFn = confirmCardSetup({
+  const confirmCardBindingFn = confirmCardBinding({
     gateway: billingGateway,
     cardSetupIntents: cardSetupIntentRepo,
     subscriptions: subscriptionRepo,
     plans: planRepo,
     cardLedger,
     clock,
-    idGen: () => randomUUID(),
+  });
+  const confirmPeriodPaymentFn = confirmPeriodPayment({
+    gateway: billingGateway,
+    cardSetupIntents: cardSetupIntentRepo,
+    subscriptions: subscriptionRepo,
+    plans: planRepo,
+    clock,
   });
   const payFn = payForPeriod({
     subscriptions: subscriptionRepo,
@@ -916,7 +921,8 @@ const main = async () => {
       },
       getPlans: () => planRepo.list(),
       pay: payFn,
-      confirmCardSetup: confirmCardSetupFn,
+      confirmCardBinding: confirmCardBindingFn,
+      confirmPeriodPayment: confirmPeriodPaymentFn,
     },
   });
 

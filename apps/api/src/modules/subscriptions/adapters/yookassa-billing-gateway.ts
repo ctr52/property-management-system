@@ -1,25 +1,20 @@
-import type { YooKassaCard, YooKassaClient, YooKassaCredentials, YooKassaPaymentStatus } from '../../../shared/integrations/yookassa/client';
-import type { BillingGateway, CardSetupStatus } from '../ports/gateway';
+import type { YooKassaCard, YooKassaClient, YooKassaCredentials } from '../../../shared/integrations/yookassa/client';
+import type { BillingGateway, CardBinding, PeriodPayment } from '../ports/gateway';
 
 /**
- * BillingGateway на ЮMoney/ЮKassa для подписок (арендодатель платит НАМ).
- * Переиспользует общий протокол-клиент ([[yookassa-client]]); отличие от платежей броней —
- * креды НАШЕГО магазина (а не арендодателя) и сценарий привязки карты.
+ * BillingGateway на ЮMoney/ЮKassa для подписок (арендодатель платит НАМ). Креды — НАШЕГО магазина.
+ * Два сценария сбора карты (см. [[gateway]]):
+ *  - bindCard: zero-amount привязка карты БЕЗ списания (POST /payment_methods) → payment_method.active;
+ *  - checkoutPeriod: прямой платёж на стоимость плана (capture:true) + save_payment_method → payment.succeeded.
+ * Оба возвращают redirect; подтверждение — вебхуком, статус сверяем re-fetch'ем.
  *
- * require_card_first → верификация карты auth-hold'ом (capture:false) на малую сумму + сохранение
- * способа оплаты для будущего автобиллинга. Это НЕ charge+refund: при подтверждении холд снимется
- * (cancel в вебхук-хендлере), денег с клиента не уходит.
- *
- * NB: persist карты на двухстадийном (capture:false) платеже сверить с боевой ЮKassa. Если save
- * срабатывает только на succeeded — переключить на capture:true + немедленный refund (флаг ниже).
+ * NB: zero-amount привязка (/payment_methods) и сохранение карты на успешном платеже сверить с
+ * боевой ЮKassa (тестовый магазин): формы ответов и события выверены по докам v3.
  */
 export type YooKassaBillingGatewayDeps = {
   readonly client: YooKassaClient;
   /** Креды НАШЕГО (платформенного) магазина ЮKassa. */
   readonly credentials: YooKassaCredentials;
-  /** Сумма проверочного холда в minor units (₽10 = 1000). */
-  readonly verificationAmountMinor: number;
-  readonly currency: string;
 };
 
 /** Псевдо-отпечаток карты для дедупа триалов. Стабилен для физической карты (БИН+хвост+срок). */
@@ -28,44 +23,50 @@ const cardFingerprint = (card: YooKassaCard | null): string | null =>
     ? `${card.first6}${card.last4}${card.expiryYear ?? ''}${card.expiryMonth ?? ''}`
     : null;
 
-/** ЮKassa-статус холда → доменный статус привязки карты. */
-const SETUP_STATUS: Readonly<Record<YooKassaPaymentStatus, CardSetupStatus>> = {
-  pending: 'pending',
-  waiting_for_capture: 'held', // карта подтверждена, деньги заморожены
-  succeeded: 'held', // edge: вдруг сразу списалось — карта точно валидна
-  canceled: 'failed',
-};
-
 export const createYooKassaBillingGateway = (deps: YooKassaBillingGatewayDeps): BillingGateway => ({
-  setupPaymentMethod: (intent) =>
+  bindCard: (intent) =>
+    deps.client
+      .createPaymentMethod(deps.credentials, { returnUrl: intent.returnUrl, idempotencyKey: intent.idempotencyKey })
+      .map((pm) => ({ kind: 'redirect' as const, url: pm.confirmationUrl ?? '', externalId: pm.id }))
+      .mapErr((e) => ({ code: 'gateway_error' as const, message: e.message })),
+
+  getCardBinding: (bindingId) =>
+    deps.client
+      .getPaymentMethod(deps.credentials, bindingId)
+      .map(
+        (pm): CardBinding => ({
+          status: pm.status === 'active' ? 'active' : pm.status === 'pending' ? 'pending' : 'failed',
+          cardFingerprint: cardFingerprint(pm.card),
+          paymentMethodId: pm.status === 'active' ? pm.id : null,
+        }),
+      )
+      .mapErr((e) => ({ code: 'gateway_error' as const, message: e.message })),
+
+  checkoutPeriod: (intent) =>
     deps.client
       .createPayment(deps.credentials, {
-        amountMinor: deps.verificationAmountMinor,
-        currency: deps.currency,
-        capture: false, // auth-hold: замораживаем, не списываем
+        amountMinor: intent.amountMinor,
+        currency: intent.currency,
+        capture: true, // сразу списываем стоимость плана
         returnUrl: intent.returnUrl,
-        description: 'Проверочный холд для привязки карты',
-        savePaymentMethod: true,
-        metadata: { orgId: intent.orgId, planId: intent.planId, purpose: 'card_setup' },
+        description: 'Оплата подписки',
+        savePaymentMethod: true, // карта сохранится для будущего автобиллинга
+        metadata: { orgId: intent.orgId, planId: intent.planId, purpose: 'period_checkout' },
         idempotencyKey: intent.idempotencyKey,
       })
-      .map((payment) => ({ kind: 'redirect' as const, url: payment.confirmationUrl ?? '', externalId: payment.id }))
+      .map((p) => ({ kind: 'redirect' as const, url: p.confirmationUrl ?? '', externalId: p.id }))
       .mapErr((e) => ({ code: 'gateway_error' as const, message: e.message })),
 
-  getSetupResult: (paymentId) =>
+  getPeriodPayment: (paymentId) =>
     deps.client
       .getPayment(deps.credentials, paymentId)
-      .map((payment) => ({
-        status: SETUP_STATUS[payment.status],
-        cardFingerprint: cardFingerprint(payment.card),
-        paymentMethodId: payment.paymentMethodId,
-      }))
-      .mapErr((e) => ({ code: 'gateway_error' as const, message: e.message })),
-
-  releaseHold: (paymentId, idempotencyKey) =>
-    deps.client
-      .cancelPayment(deps.credentials, paymentId, idempotencyKey)
-      .map(() => undefined)
+      .map(
+        (p): PeriodPayment => ({
+          status: p.status === 'succeeded' ? 'succeeded' : p.status === 'canceled' ? 'canceled' : 'pending',
+          cardFingerprint: cardFingerprint(p.card),
+          paymentMethodId: p.paymentMethodId,
+        }),
+      )
       .mapErr((e) => ({ code: 'gateway_error' as const, message: e.message })),
 
   charge: (params) =>
@@ -73,7 +74,7 @@ export const createYooKassaBillingGateway = (deps: YooKassaBillingGatewayDeps): 
       .createPayment(deps.credentials, {
         amountMinor: params.amountMinor,
         currency: params.currency,
-        capture: true, // сразу списываем (off-session по сохранённой карте)
+        capture: true, // off-session по сохранённой карте
         description: params.description,
         paymentMethodId: params.methodRef,
         idempotencyKey: params.idempotencyKey,

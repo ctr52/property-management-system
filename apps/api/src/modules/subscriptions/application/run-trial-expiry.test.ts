@@ -16,9 +16,10 @@ const trial = (over: Partial<Subscription>): Subscription => ({
 const makeDeps = (due: Subscription[], charge?: BillingGateway['charge']) => {
   const saved: Subscription[] = [];
   const gateway = {
-    setupPaymentMethod: vi.fn(),
-    getSetupResult: vi.fn(),
-    releaseHold: vi.fn(),
+    bindCard: vi.fn(),
+    getCardBinding: vi.fn(),
+    checkoutPeriod: vi.fn(),
+    getPeriodPayment: vi.fn(),
     charge: charge ?? vi.fn(() => okAsync({ status: 'succeeded' as const })),
   } as unknown as BillingGateway;
   const deps: RunTrialExpiryDeps = {

@@ -1,29 +1,36 @@
 import type { ResultAsync } from 'neverthrow';
 
 /**
- * Платёжный шлюз подписки (SaaS-биллинг тенанта). Отделён от провайдеров платежей броней
- * (`payments/ports/provider.ts`): там оплата гостем разовая, здесь — привязка карты на файле
- * с auth-hold для верификации и (далее) рекуррентное списание.
- *
- * Для ветки require_card_first ([[trial-policy]]): карта проверяется auth-hold'ом (₽1–₽10 → void),
- * а не charge+refund. Подтверждение холда приходит асинхронно (вебхук) — тогда и стартует
- * trialing(withCard:true) и фиксируется отпечаток карты в ledger.
+ * Платёжный шлюз подписки (SaaS-биллинг тенанта). Отделён от провайдеров платежей броней.
+ * Два независимых сценария сбора карты, каждый — отдельная операция (без auth-hold):
+ *  - привязка карты БЕЗ списания (zero-amount, ЮKassa /payment_methods) — триал require_card_first;
+ *  - прямая оплата периода (charge стоимости плана + сохранение карты) — оплата подписки.
+ * Оба возвращают redirect на хостед-страницу шлюза; подтверждение приходит вебхуком (без подписи →
+ * источник правды re-fetch у шлюза).
  */
 
-/** Инструкция пользователю — куда идти привязывать карту. Пока единственный режим — redirect. */
-export type SetupInstruction = {
+/** Инструкция пользователю — redirect на хостед-страницу шлюза (привязка/оплата). */
+export type RedirectInstruction = {
   readonly kind: 'redirect';
   readonly url: string;
-  /** id сессии настройки у провайдера — чтобы сматчить подтверждение auth-hold по вебхуку. */
-  readonly externalId?: string;
+  /** id сессии у шлюза: payment_method_id (привязка) либо payment_id (оплата) — матч по вебхуку. */
+  readonly externalId: string;
 };
 
-export type SetupPaymentMethodIntent = {
+export type BindCardIntent = {
   readonly orgId: string;
   readonly planId: string;
   /** Куда вернуть пользователя после привязки карты (наш фронт). */
   readonly returnUrl: string;
-  /** Идемпотентность исходящего: один ключ → одна сессия настройки. */
+  readonly idempotencyKey: string;
+};
+
+export type CheckoutPeriodIntent = {
+  readonly orgId: string;
+  readonly planId: string;
+  readonly amountMinor: number;
+  readonly currency: string;
+  readonly returnUrl: string;
   readonly idempotencyKey: string;
 };
 
@@ -32,20 +39,29 @@ export type BillingError = {
   readonly message: string;
 };
 
-/** Статус проверочного холда: pending (ждём ввод карты) | held (карта подтверждена, холд стоит) | failed. */
-export type CardSetupStatus = 'pending' | 'held' | 'failed';
+/** Статус привязки карты: pending (ждём ввод) | active (карта сохранена) | failed. */
+export type CardBindingStatus = 'pending' | 'active' | 'failed';
 
-export type CardSetupResult = {
-  readonly status: CardSetupStatus;
+export type CardBinding = {
+  readonly status: CardBindingStatus;
   /** Псевдо-отпечаток карты для card-ledger («одна карта = один триал»). */
   readonly cardFingerprint: string | null;
-  /** id сохранённого способа оплаты для будущего автобиллинга. */
+  /** id сохранённого способа оплаты (для будущего автобиллинга). null пока не active. */
   readonly paymentMethodId: string | null;
 };
 
-/** Списание по сохранённой карте (автобиллинг). */
+/** Статус оплаты периода: pending (ждём ввод) | succeeded (оплачено) | canceled (отклонено). */
+export type PeriodPaymentStatus = 'pending' | 'succeeded' | 'canceled';
+
+export type PeriodPayment = {
+  readonly status: PeriodPaymentStatus;
+  readonly cardFingerprint: string | null;
+  /** id сохранённого способа оплаты (карта сохранена при оплате → автобиллинг далее). */
+  readonly paymentMethodId: string | null;
+};
+
+/** Списание по сохранённой карте (автобиллинг / синхронная оплата при карте на файле). */
 export type ChargeParams = {
-  /** Ссылка шлюза на сохранённый способ оплаты (Subscription.billingMethodRef). */
   readonly methodRef: string;
   readonly amountMinor: number;
   readonly currency: string;
@@ -61,14 +77,14 @@ export type ChargeParams = {
 export type ChargeResult = { readonly status: 'succeeded' | 'declined' };
 
 export type BillingGateway = {
-  /** Запустить привязку карты с auth-hold для верификации. Возврат — redirect-инструкция. */
-  readonly setupPaymentMethod: (
-    intent: SetupPaymentMethodIntent,
-  ) => ResultAsync<SetupInstruction, BillingError>;
-  /** Свериться по статусу холда (источник правды — re-fetch у шлюза, не тело вебхука). */
-  readonly getSetupResult: (paymentId: string) => ResultAsync<CardSetupResult, BillingError>;
-  /** Снять холд (вернуть заморозку) — деньги с клиента не списываются, карта остаётся сохранённой. */
-  readonly releaseHold: (paymentId: string, idempotencyKey: string) => ResultAsync<void, BillingError>;
-  /** Списать по сохранённой карте (автоконвертация триала в платный). */
+  /** Привязать карту БЕЗ списания (zero-amount binding). Триал require_card_first. */
+  readonly bindCard: (intent: BindCardIntent) => ResultAsync<RedirectInstruction, BillingError>;
+  /** Свериться по привязке карты (источник правды — re-fetch у шлюза). */
+  readonly getCardBinding: (bindingId: string) => ResultAsync<CardBinding, BillingError>;
+  /** Прямая оплата периода: списать стоимость плана + сохранить карту для автобиллинга. */
+  readonly checkoutPeriod: (intent: CheckoutPeriodIntent) => ResultAsync<RedirectInstruction, BillingError>;
+  /** Свериться по оплате периода (источник правды — re-fetch у шлюза). */
+  readonly getPeriodPayment: (paymentId: string) => ResultAsync<PeriodPayment, BillingError>;
+  /** Списать по сохранённой карте (автоконвертация триала / синхронная оплата при карте на файле). */
   readonly charge: (params: ChargeParams) => ResultAsync<ChargeResult, BillingError>;
 };

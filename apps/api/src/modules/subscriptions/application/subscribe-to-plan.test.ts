@@ -35,13 +35,14 @@ const makeDeps = (over: {
   const saved: Subscription[] = [];
   const marked: string[] = [];
   const intents: { paymentId: string; orgId: string }[] = [];
-  const setupPaymentMethod = vi.fn<BillingGateway['setupPaymentMethod']>(() =>
+  const bindCard = vi.fn<BillingGateway['bindCard']>(() =>
     okAsync({ kind: 'redirect', url: 'https://pay/setup', externalId: 'sess1' }),
   );
   const fullGateway: BillingGateway = {
-    setupPaymentMethod,
-    getSetupResult: () => okAsync({ status: 'held', cardFingerprint: null, paymentMethodId: null }),
-    releaseHold: () => okAsync(undefined),
+    bindCard,
+    getCardBinding: () => okAsync({ status: 'active', cardFingerprint: null, paymentMethodId: null }),
+    checkoutPeriod: () => okAsync({ kind: 'redirect', url: 'https://pay/checkout', externalId: 'pay1' }),
+    getPeriodPayment: () => okAsync({ status: 'succeeded', cardFingerprint: null, paymentMethodId: null }),
     charge: () => okAsync({ status: 'succeeded' }),
   };
   const deps: SubscribeToPlanDeps = {
@@ -66,7 +67,7 @@ const makeDeps = (over: {
     clock: { now: () => NOW },
     idGen: () => 'id1',
   };
-  return { deps, saved, marked, intents, setupPaymentMethod };
+  return { deps, saved, marked, intents, bindCard };
 };
 
 describe('subscribeToPlan', () => {
@@ -94,16 +95,16 @@ describe('subscribeToPlan', () => {
     expect(marked).toHaveLength(0);
   });
 
-  it('номер уже жёг триал → card_required (auth-hold), intent сохранён, без выдачи триала', async () => {
-    const { deps, saved, marked, intents, setupPaymentMethod } = makeDeps({ usedTrial: true });
+  it('номер уже жёг триал → card_required (zero-amount привязка), intent сохранён, без выдачи триала', async () => {
+    const { deps, saved, marked, intents, bindCard } = makeDeps({ usedTrial: true });
     const r = await subscribeToPlan(deps)('org1', baseInput);
 
     const outcome = r._unsafeUnwrap();
     expect(outcome.kind).toBe('card_required');
     if (outcome.kind === 'card_required') expect(outcome.setup.url).toBe('https://pay/setup');
-    expect(setupPaymentMethod).toHaveBeenCalledOnce();
+    expect(bindCard).toHaveBeenCalledOnce();
     expect(intents).toEqual([{ paymentId: 'sess1', orgId: 'org1' }]); // отложенная привязка
-    expect(saved).toHaveLength(0); // триал стартует только на подтверждении холда
+    expect(saved).toHaveLength(0); // триал стартует только на подтверждении привязки
     expect(marked).toHaveLength(0);
   });
 
@@ -128,9 +129,10 @@ describe('subscribeToPlan', () => {
 
   it('сбой шлюза на привязке карты → validation (маппинг ошибки адаптера)', async () => {
     const gateway: BillingGateway = {
-      setupPaymentMethod: () => errAsync({ code: 'gateway_error', message: 'провайдер недоступен' }),
-      getSetupResult: () => okAsync({ status: 'held', cardFingerprint: null, paymentMethodId: null }),
-      releaseHold: () => okAsync(undefined),
+      bindCard: () => errAsync({ code: 'gateway_error', message: 'провайдер недоступен' }),
+      getCardBinding: () => okAsync({ status: 'active', cardFingerprint: null, paymentMethodId: null }),
+      checkoutPeriod: () => okAsync({ kind: 'redirect', url: 'https://pay/checkout', externalId: 'pay1' }),
+      getPeriodPayment: () => okAsync({ status: 'succeeded', cardFingerprint: null, paymentMethodId: null }),
       charge: () => okAsync({ status: 'succeeded' }),
     };
     const { deps } = makeDeps({ usedTrial: true, gateway });

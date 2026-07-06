@@ -24,7 +24,7 @@ const makeDeps = (over: { existing?: Subscription | null; chargeStatus?: 'succee
   const saved: Subscription[] = [];
   const intents: unknown[] = [];
   const charge = vi.fn<BillingGateway['charge']>(() => okAsync({ status: over.chargeStatus ?? 'succeeded' }));
-  const setupPaymentMethod = vi.fn<BillingGateway['setupPaymentMethod']>(() =>
+  const checkoutPeriod = vi.fn<BillingGateway['checkoutPeriod']>(() =>
     okAsync({ kind: 'redirect' as const, url: 'https://pay.example/abc', externalId: 'pay1' }),
   );
   const deps: PayForPeriodDeps = {
@@ -34,12 +34,12 @@ const makeDeps = (over: { existing?: Subscription | null; chargeStatus?: 'succee
       listTrialingDueBy: async () => [],
     },
     plans: { get: async () => PLAN, list: async () => [PLAN] },
-    gateway: { setupPaymentMethod, getSetupResult: vi.fn(), releaseHold: vi.fn(), charge },
+    gateway: { bindCard: vi.fn(), getCardBinding: vi.fn(), checkoutPeriod, getPeriodPayment: vi.fn(), charge },
     cardSetupIntents: { save: async (i) => void intents.push(i), getByPaymentId: async () => null, consume: async () => {} },
     clock: { now: () => NOW },
     idGen: () => 'idem1',
   };
-  return { deps, saved, intents, charge, setupPaymentMethod };
+  return { deps, saved, intents, charge, checkoutPeriod };
 };
 
 describe('payForPeriod', () => {
@@ -75,12 +75,14 @@ describe('payForPeriod', () => {
     expect(saved).toHaveLength(0);
   });
 
-  it('нет карты → card_required: auth-hold + отложенный intent, без списания', async () => {
-    const { deps, intents, charge, setupPaymentMethod } = makeDeps({ existing: sub({ billingMethodRef: null }) });
+  it('нет карты → redirect: прямая оплата на стоимость плана + отложенный intent, без charge', async () => {
+    const { deps, intents, charge, checkoutPeriod } = makeDeps({ existing: sub({ billingMethodRef: null }) });
     const r = (await payForPeriod(deps)('org1', { returnUrl: 'https://app/billing' }))._unsafeUnwrap();
-    expect(r.kind).toBe('card_required');
-    if (r.kind === 'card_required') expect(r.setup.url).toBe('https://pay.example/abc');
-    expect(setupPaymentMethod).toHaveBeenCalledOnce();
+    expect(r.kind).toBe('redirect');
+    if (r.kind === 'redirect') expect(r.setup.url).toBe('https://pay.example/abc');
+    expect(checkoutPeriod).toHaveBeenCalledOnce();
+    // Сумма редиректа = стоимость плана (не ₽10-холд).
+    expect((checkoutPeriod.mock.calls[0]![0] as { amountMinor: number }).amountMinor).toBe(290000);
     expect(charge).not.toHaveBeenCalled();
     expect(intents).toHaveLength(1);
   });
