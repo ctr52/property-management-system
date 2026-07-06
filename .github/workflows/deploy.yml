@@ -2,7 +2,7 @@ name: deploy
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   workflow_dispatch: {} # можно запускать вручную из вкладки Actions
 
 # Не даём двум деплоям идти одновременно на одну ВМ.
